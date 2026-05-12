@@ -112,6 +112,10 @@ def env_clean(key: str, default: str | None = None) -> str:
     return cleaned
 
 
+def looks_like_email(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
+
+
 def build_query() -> str:
     cats = [
         "cond-mat.mtrl-sci",
@@ -435,6 +439,13 @@ def send_email(subject: str, html_body: str, cid_parts: list[tuple[str, bytes, s
     from_email = env_clean("FROM_EMAIL", smtp_user)
     to_email = env_clean("TO_EMAIL")
 
+    # QQ SMTP commonly requires sender to be the authenticated mailbox.
+    if "qq.com" in smtp_host.lower():
+        from_email = smtp_user
+
+    if not looks_like_email(from_email):
+        from_email = smtp_user
+
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_email
@@ -450,7 +461,12 @@ def send_email(subject: str, html_body: str, cid_parts: list[tuple[str, bytes, s
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
         server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
+        try:
+            server.send_message(msg)
+        except smtplib.SMTPSenderRefused:
+            # Retry once with strict sender binding.
+            msg.replace_header("From", smtp_user)
+            server.send_message(msg)
 
 
 def main() -> None:
