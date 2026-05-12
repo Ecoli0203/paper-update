@@ -223,19 +223,40 @@ def select_papers(entries: list[dict[str, Any]], lookback_hours: float, max_top:
     return top, fast
 
 
-def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str, str]:
+def summarize_with_openai(client: OpenAI, model: str, paper: Paper, pdf_max_pages: int = 8) -> dict[str, str]:
+    context = extract_paper_context(paper, max_pages=pdf_max_pages)
+    context_text = context["text_excerpt"]
+    equations = context["equations"]
+    captions = context["captions"]
+
     sys_prompt = (
         "You are a condensed matter research assistant. "
-        "Return strict JSON with keys: abstract_cn, methods, solved_problem, experiment_analysis, author_reasoning, figure_interpretation, confidence. "
+        "Return strict JSON with keys: abstract_cn, core_idea, methods, key_formula_method, solved_problem, experiment_analysis, author_reasoning, evidence_points, figure_interpretation, confidence. "
         "Use concise Chinese. confidence must be one of: 高, 中, 低. "
-        "Do not use LaTeX, do not include $ or $$ delimiters."
+        "Do not use LaTeX delimiters; convert formulas to plain text. "
+        "Do not write generic templates. Every field must include paper-specific nouns from the text."
     )
     user_prompt = (
         f"Title: {paper.title}\n"
         f"Authors: {', '.join(paper.authors)}\n"
         f"Abstract: {paper.summary}\n"
         f"Topics: {', '.join(paper.topic_hits)}\n"
-        "Generate structured analysis for daily digest."
+        "Parsed body excerpt (from PDF):\n"
+        f"{context_text}\n\n"
+        "Candidate equations/method expressions:\n"
+        f"{equations}\n\n"
+        "Figure/Table captions detected:\n"
+        f"{captions}\n\n"
+        "Output constraints:\n"
+        "1) core_idea: 2-3句，明确本文新想法。\n"
+        "2) methods: 3-6条，写清材料体系、实验/计算方法、关键参数。\n"
+        "3) key_formula_method: 给出1-2个重要公式或方法表达（纯文本，不要$）。\n"
+        "4) solved_problem: 必须是已解决问题，不要写建议或待确认。\n"
+        "5) experiment_analysis: 至少写3个具体观测量/图中现象。\n"
+        "6) author_reasoning: 必须是该文专属链路，至少包含2个具体名词（材料/器件/现象）。\n"
+        "7) evidence_points: 2-4条原文证据短句（可转述但要具体）。\n"
+        "8) figure_interpretation: 按 Fig1/Fig2/Fig3 分别解释物理现象与结论支撑。\n"
+        "Generate detailed structured analysis for daily digest."
     )
     resp = client.responses.create(
         model=model,
@@ -252,10 +273,13 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str,
     data = extract_json_object(content)
     keys = [
         "abstract_cn",
+        "core_idea",
         "methods",
+        "key_formula_method",
         "solved_problem",
         "experiment_analysis",
         "author_reasoning",
+        "evidence_points",
         "figure_interpretation",
         "confidence",
     ]
@@ -263,7 +287,110 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str,
         data.setdefault(k, "")
         if isinstance(data[k], str):
             data[k] = strip_latex_delimiters(data[k])
+
+    if is_generic_analysis(data):
+        repair_prompt = (
+            "你的上一个输出过于泛化。请重写为论文特异版本。\n"
+            f"Title: {paper.title}\n"
+            f"Abstract: {paper.summary}\n"
+            f"Body excerpt: {context_text}\n"
+            "要求：所有字段都要包含本文具体名词，不得出现“建议重点看”“目标是”等空泛句。"
+        )
+        repaired = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": repair_prompt},
+            ],
+            temperature=0.1,
+            text={"format": {"type": "json_object"}},
+        )
+        repaired_text = getattr(repaired, "output_text", "") or extract_output_text(repaired)
+        repaired_data = extract_json_object(repaired_text)
+        for k in keys:
+            if isinstance(repaired_data.get(k), str) and repaired_data[k].strip():
+                data[k] = strip_latex_delimiters(repaired_data[k])
     return data
+
+
+def is_generic_analysis(data: dict[str, Any]) -> bool:
+    probe = " ".join(
+        [
+            str(data.get("solved_problem", "")),
+            str(data.get("experiment_analysis", "")),
+            str(data.get("author_reasoning", "")),
+        ]
+    )
+    generic_patterns = [
+        "研究动机",
+        "提出机制假设",
+        "建议重点看",
+        "目标是",
+        "设计测量或计算",
+    ]
+    hit = sum(1 for g in generic_patterns if g in probe)
+    return hit >= 2
+
+
+def extract_paper_context(paper: Paper, max_pages: int = 8) -> dict[str, str]:
+    try:
+        pdf = requests.get(paper.pdf_url, timeout=90)
+        pdf.raise_for_status()
+    except Exception:
+        return {"text_excerpt": paper.summary, "equations": "", "captions": ""}
+
+    try:
+        doc = fitz.open(stream=pdf.content, filetype="pdf")
+    except Exception:
+        return {"text_excerpt": paper.summary, "equations": "", "captions": ""}
+
+    text_chunks: list[str] = []
+    eq_candidates: list[str] = []
+    cap_candidates: list[str] = []
+
+    for page_idx in range(min(max_pages, len(doc))):
+        page = doc[page_idx]
+        page_text = page.get_text("text")
+        if not page_text:
+            continue
+
+        lines = [re.sub(r"\s+", " ", ln).strip() for ln in page_text.splitlines()]
+        for ln in lines:
+            if len(ln) < 20:
+                continue
+            if re.search(r"(Fig\.?|Figure|Table)\s*\d+", ln, re.IGNORECASE):
+                cap_candidates.append(ln[:220])
+                continue
+            if re.search(r"[=≈∝≤≥]\s*", ln) and len(ln) < 180:
+                eq_candidates.append(ln)
+
+        compact = " ".join(lines)
+        compact = re.sub(r"\s+", " ", compact).strip()
+        if compact:
+            text_chunks.append(compact[:2200])
+
+    excerpt = "\n\n".join(text_chunks)[:12000]
+    equations = "\n".join(dedup(eq_candidates)[:8])
+    captions = "\n".join(dedup(cap_candidates)[:10])
+    if not excerpt:
+        excerpt = paper.summary
+    return {"text_excerpt": excerpt, "equations": equations, "captions": captions}
+
+
+def dedup(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        key = it.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def html_text(text: str) -> str:
+    return html.escape(text).replace("\n", "<br>")
 
 
 def extract_output_text(resp: Any) -> str:
@@ -318,11 +445,14 @@ def summarize_rule_based(paper: Paper) -> dict[str, str]:
     topic_text = "、".join(topic_cn.get(t, t) for t in paper.topic_hits) if paper.topic_hits else "凝聚态"
     return {
         "abstract_cn": f"本文关注{topic_text}方向。核心内容：{first}",
-        "methods": f"依据摘要识别的方法线索：{second or '文中主要通过理论建模/实验表征与数据分析推进结论。'}",
-        "solved_problem": "目标是识别该体系中的关键物理机制并给出可验证结果，具体贡献请结合原文方法与结果段落确认。",
-        "experiment_analysis": "建议重点看输运/能带/相图等关键图，验证是否有对照实验、参数扫描与替代机制排除。",
-        "author_reasoning": "研究动机 -> 提出机制假设 -> 设计测量或计算 -> 用关键观测量验证 -> 讨论边界与下一步。",
-        "figure_interpretation": "图表通常用于展示相图演化、输运响应或能带特征，以支撑机制解释与参数依赖关系。",
+        "core_idea": "未启用LLM时仅能给出摘要级信息，建议开启ENABLE_LLM=true获取逐篇细读版。",
+        "methods": f"依据摘要识别的方法线索：{second or '文中通过实验表征与理论分析推进结论。'}",
+        "key_formula_method": "未提取到可靠公式，请在原文方法部分查看关键表达式。",
+        "solved_problem": "从摘要可见该文尝试解决特定材料体系中的机理识别或性能验证问题。",
+        "experiment_analysis": "摘要模式下无法稳定还原全部实验细节。",
+        "author_reasoning": "摘要模式无法完整重建作者推理链。",
+        "evidence_points": "- 证据1：来自摘要主结论。\n- 证据2：来自摘要方法描述。",
+        "figure_interpretation": "图表解释受限于摘要模式，建议启用LLM细读。",
         "confidence": "中",
     }
 
@@ -400,9 +530,12 @@ def build_markdown(
         lines.append(f"- arXiv: {paper.abs_url}")
         lines.append(f"- 方向: {', '.join(paper.topic_hits)}")
         lines.append(f"- 摘要浓缩: {a.get('abstract_cn', '').strip()}")
+        lines.append(f"- 核心想法: {a.get('core_idea', '').strip()}")
         lines.append(f"- 技术方法: {a.get('methods', '').strip()}")
+        lines.append(f"- 关键公式/方法表达: {a.get('key_formula_method', '').strip()}")
         lines.append(f"- 解决问题: {a.get('solved_problem', '').strip()}")
         lines.append(f"- 实验结果分析: {a.get('experiment_analysis', '').strip()}")
+        lines.append(f"- 证据要点: {a.get('evidence_points', '').strip()}")
         lines.append(f"- 图表物理现象解读: {a.get('figure_interpretation', '').strip()}")
         lines.append(f"- 作者思考路径: {a.get('author_reasoning', '').strip()}")
         lines.append(f"- 可信度: {a.get('confidence', '中')}")
@@ -451,12 +584,15 @@ def build_html(
         parts.append(f"<h3>{idx}) {html.escape(paper.title)}</h3>")
         parts.append(f"<p><b>arXiv:</b> <a href='{html.escape(paper.abs_url)}'>{html.escape(paper.abs_url)}</a></p>")
         parts.append(f"<p><b>方向:</b> {html.escape(', '.join(paper.topic_hits))}</p>")
-        parts.append(f"<p><b>摘要浓缩:</b> {html.escape(a.get('abstract_cn', ''))}</p>")
-        parts.append(f"<p><b>技术方法:</b> {html.escape(a.get('methods', ''))}</p>")
-        parts.append(f"<p><b>解决问题:</b> {html.escape(a.get('solved_problem', ''))}</p>")
-        parts.append(f"<p><b>实验结果分析:</b> {html.escape(a.get('experiment_analysis', ''))}</p>")
-        parts.append(f"<p><b>图表物理现象解读:</b> {html.escape(a.get('figure_interpretation', ''))}</p>")
-        parts.append(f"<p><b>作者思考路径:</b> {html.escape(a.get('author_reasoning', ''))}</p>")
+        parts.append(f"<p><b>摘要浓缩:</b> {html_text(a.get('abstract_cn', ''))}</p>")
+        parts.append(f"<p><b>核心想法:</b> {html_text(a.get('core_idea', ''))}</p>")
+        parts.append(f"<p><b>技术方法:</b> {html_text(a.get('methods', ''))}</p>")
+        parts.append(f"<p><b>关键公式/方法表达:</b> {html_text(a.get('key_formula_method', ''))}</p>")
+        parts.append(f"<p><b>解决问题:</b> {html_text(a.get('solved_problem', ''))}</p>")
+        parts.append(f"<p><b>实验结果分析:</b> {html_text(a.get('experiment_analysis', ''))}</p>")
+        parts.append(f"<p><b>证据要点:</b> {html_text(a.get('evidence_points', ''))}</p>")
+        parts.append(f"<p><b>图表物理现象解读:</b> {html_text(a.get('figure_interpretation', ''))}</p>")
+        parts.append(f"<p><b>作者思考路径:</b> {html_text(a.get('author_reasoning', ''))}</p>")
         parts.append(f"<p><b>可信度:</b> {html.escape(a.get('confidence', '中'))}</p>")
 
         imgs = figures.get(paper.arxiv_id, [])
@@ -530,6 +666,7 @@ def main() -> None:
     parser.add_argument("--max-top", type=int, default=4)
     parser.add_argument("--max-fast", type=int, default=8)
     parser.add_argument("--supplement", action="store_true")
+    parser.add_argument("--pdf-max-pages", type=int, default=int(env_clean("PDF_MAX_PAGES", "8")))
     args = parser.parse_args()
 
     enable_llm = env_clean("ENABLE_LLM", "false").lower() in {"1", "true", "yes", "on"}
@@ -555,7 +692,7 @@ def main() -> None:
     figures: dict[str, list[Path]] = {}
     for p in top:
         if client is not None:
-            analyses[p.arxiv_id] = summarize_with_openai(client, model, p)
+            analyses[p.arxiv_id] = summarize_with_openai(client, model, p, pdf_max_pages=args.pdf_max_pages)
         else:
             analyses[p.arxiv_id] = summarize_rule_based(p)
         figures[p.arxiv_id] = extract_figures(p, image_dir, limit=3)

@@ -49,11 +49,18 @@ jobs:
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
           ELITE_AUTHORS: ${{ secrets.ELITE_AUTHORS }}
           ELITE_GROUP_KEYWORDS: ${{ secrets.ELITE_GROUP_KEYWORDS }}
+          PDF_MAX_PAGES: ${{ secrets.PDF_MAX_PAGES }}
+          MAX_TOP: ${{ secrets.MAX_TOP }}
+          MAX_FAST: ${{ secrets.MAX_FAST }}
         run: |
+          TOP_ARG=""
+          FAST_ARG=""
+          if [ -n "$MAX_TOP" ]; then TOP_ARG="--max-top $MAX_TOP"; fi
+          if [ -n "$MAX_FAST" ]; then FAST_ARG="--max-fast $MAX_FAST"; fi
           if [ "$SUPPLEMENT" = "true" ]; then
-            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS" --supplement
+            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS" $TOP_ARG $FAST_ARG --supplement
           else
-            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS"
+            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS" $TOP_ARG $FAST_ARG
           fi
 
       - name: Upload report artifacts

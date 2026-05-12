@@ -10,6 +10,7 @@ Automated daily digest for condensed matter papers focused on:
 It runs on GitHub Actions and sends email reports with:
 
 - Structured analysis per top paper (summary, methods, solved problem, experiment analysis, reasoning path)
+- PDF-aware deep analysis (uses parsed body text/captions/equation candidates, not abstract-only)
 - arXiv links
 - Key figures extracted from PDF (2-3 per top paper)
 
@@ -27,6 +28,9 @@ Set these in `Settings -> Secrets and variables -> Actions`.
 - `TO_EMAIL`: receiver email (for you: `ecoli_2022@qq.com`)
 - `ELITE_AUTHORS`: comma-separated important author names (optional but recommended)
 - `ELITE_GROUP_KEYWORDS`: comma-separated group/institute keywords (optional)
+- `PDF_MAX_PAGES`: how many PDF pages to parse for deep analysis (optional, default `8`)
+- `MAX_TOP`: number of fully analyzed papers in digest (optional, default `4`)
+- `MAX_FAST`: number of fast-scan papers (optional, default `8`)
 
 Example `ELITE_AUTHORS`:
 
