@@ -640,6 +640,7 @@ def build_markdown(
     figures: dict[str, list[Path]],
     lookback_hours: float,
     run_ts_bj: dt.datetime,
+    warnings: list[str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# 凝聚态论文日报 | {run_ts_bj.strftime('%Y-%m-%d %H:%M')} (北京时间)")
@@ -648,6 +649,8 @@ def build_markdown(
     lines.append(f"- 抓取窗口: 最近 {lookback_hours:.1f} 小时")
     lines.append(f"- 重点精读: {len(top)} 篇")
     lines.append(f"- 快速速览: {len(fast)} 篇")
+    if warnings:
+        lines.append(f"- 运行警告: {len(warnings)} 条，见文末")
     lines.append("")
     lines.append("## 今日重点精读")
     for i, paper in enumerate(top, start=1):
@@ -684,6 +687,12 @@ def build_markdown(
     for paper in fast:
         lines.append(f"| {paper.title} | {', '.join(paper.topic_hits)} | {paper.abs_url} |")
     lines.append("")
+
+    if warnings:
+        lines.append("## 运行警告")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -694,6 +703,7 @@ def build_html(
     run_ts_bj: dt.datetime,
     analyses: dict[str, dict[str, str]],
     figures: dict[str, list[Path]],
+    warnings: list[str] | None = None,
 ) -> tuple[str, list[tuple[str, bytes, str]]]:
     cid_parts: list[tuple[str, bytes, str]] = []
     parts = []
@@ -703,6 +713,8 @@ def build_html(
     parts.append(f"<li>抓取窗口: 最近 {lookback_hours:.1f} 小时</li>")
     parts.append(f"<li>重点精读: {len(top)} 篇</li>")
     parts.append(f"<li>快速速览: {len(fast)} 篇</li>")
+    if warnings:
+        parts.append(f"<li>运行警告: {len(warnings)} 条，见文末</li>")
     parts.append("</ul>")
     parts.append("<h2>今日重点精读</h2>")
 
@@ -746,7 +758,30 @@ def build_html(
         )
     parts.append("</table>")
 
+    if warnings:
+        parts.append("<h2>运行警告</h2>")
+        parts.append("<ul>")
+        for w in warnings:
+            parts.append(f"<li>{html_text(w)}</li>")
+        parts.append("</ul>")
+
     return "\n".join(parts), cid_parts
+
+
+def llm_error_analysis(paper: Paper, err: Exception) -> dict[str, str]:
+    fallback = summarize_rule_based(paper)
+    msg = sanitize_error_body(str(err), limit=600)
+    fallback.update(
+        {
+            "core_idea": "本篇 LLM 深读失败，以下为摘要级兜底结果；请查看文末运行警告定位接口问题。",
+            "key_formula_method": "LLM 深读失败，未能可靠抽取公式/方法表达。",
+            "experiment_analysis": f"LLM 深读失败，无法给出逐图实验分析。错误摘要：{msg}",
+            "evidence_points": "LLM 深读失败，未能抽取可靠证据链。",
+            "figure_interpretation": "LLM 深读失败，图表仅随文附上，未做可靠物理解读。",
+            "confidence": "低",
+        }
+    )
+    return fallback
 
 
 def send_email(subject: str, html_body: str, cid_parts: list[tuple[str, bytes, str]]) -> None:
@@ -820,19 +855,32 @@ def main() -> None:
 
     analyses: dict[str, dict[str, str]] = {}
     figures: dict[str, list[Path]] = {}
+    warnings: list[str] = []
     for p in top:
         if enable_llm:
-            analyses[p.arxiv_id] = summarize_with_openai(api_key, api_base, model, p, pdf_max_pages=args.pdf_max_pages)
+            try:
+                analyses[p.arxiv_id] = summarize_with_openai(api_key, api_base, model, p, pdf_max_pages=args.pdf_max_pages)
+            except Exception as err:
+                warning = f"{p.versioned_id} LLM 深读失败：{sanitize_error_body(str(err), limit=400)}"
+                print(f"WARNING: {warning}")
+                warnings.append(warning)
+                analyses[p.arxiv_id] = llm_error_analysis(p, err)
         else:
             analyses[p.arxiv_id] = summarize_rule_based(p)
-        figures[p.arxiv_id] = extract_figures(p, image_dir, limit=3)
+        try:
+            figures[p.arxiv_id] = extract_figures(p, image_dir, limit=3)
+        except Exception as err:
+            warning = f"{p.versioned_id} 图表抽取失败：{sanitize_error_body(str(err), limit=300)}"
+            print(f"WARNING: {warning}")
+            warnings.append(warning)
+            figures[p.arxiv_id] = []
 
-    md = build_markdown(top, fast, analyses, figures, args.lookback_hours, now_bj)
+    md = build_markdown(top, fast, analyses, figures, args.lookback_hours, now_bj, warnings=warnings)
     md_name = "digest_supplement.md" if args.supplement else "digest.md"
     md_path = run_dir / md_name
     md_path.write_text(md, encoding="utf-8")
 
-    html_body, cids = build_html(top, fast, args.lookback_hours, now_bj, analyses, figures)
+    html_body, cids = build_html(top, fast, args.lookback_hours, now_bj, analyses, figures, warnings=warnings)
     suffix = "补充更新" if args.supplement else "早报"
     subject = f"凝聚态论文日报 {now_bj.strftime('%Y-%m-%d')} | {suffix}"
     send_email(subject, html_body, cids)
