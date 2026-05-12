@@ -1,0 +1,63 @@
+name: Condensed Matter Daily Digest
+
+on:
+  schedule:
+    - cron: "10 0 * * *"
+    - cron: "10 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set run mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "LOOKBACK_HOURS=30" >> "$GITHUB_ENV"
+            echo "SUPPLEMENT=false" >> "$GITHUB_ENV"
+          elif [ "${{ github.event.schedule }}" = "10 0 * * *" ]; then
+            echo "LOOKBACK_HOURS=30" >> "$GITHUB_ENV"
+            echo "SUPPLEMENT=false" >> "$GITHUB_ENV"
+          else
+            echo "LOOKBACK_HOURS=1.2" >> "$GITHUB_ENV"
+            echo "SUPPLEMENT=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate and send digest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          SMTP_HOST: smtp.qq.com
+          SMTP_PORT: "465"
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+          ELITE_AUTHORS: ${{ secrets.ELITE_AUTHORS }}
+          ELITE_GROUP_KEYWORDS: ${{ secrets.ELITE_GROUP_KEYWORDS }}
+        run: |
+          if [ "$SUPPLEMENT" = "true" ]; then
+            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS" --supplement
+          else
+            python daily_digest.py --lookback-hours "$LOOKBACK_HOURS"
+          fi
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-report-${{ github.run_id }}
+          path: reports/
