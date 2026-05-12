@@ -520,6 +520,28 @@ def html_text(text: str) -> str:
     return html.escape(text).replace("\n", "<br>")
 
 
+def analysis_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return strip_latex_delimiters(value).strip()
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            text = analysis_text(item)
+            if text:
+                items.append(text)
+        return "\n".join(f"- {item}" for item in items)
+    if isinstance(value, dict):
+        items = []
+        for key, item in value.items():
+            text = analysis_text(item)
+            if text:
+                items.append(f"{key}: {text}")
+        return "\n".join(items)
+    return strip_latex_delimiters(str(value)).strip()
+
+
 def extract_output_text(resp: Any) -> str:
     output = getattr(resp, "output", None)
     if not output:
@@ -659,15 +681,15 @@ def build_markdown(
         lines.append(f"### {i}) {paper.title}")
         lines.append(f"- arXiv: {paper.abs_url}")
         lines.append(f"- 方向: {', '.join(paper.topic_hits)}")
-        lines.append(f"- 摘要浓缩: {a.get('abstract_cn', '').strip()}")
-        lines.append(f"- 核心想法: {a.get('core_idea', '').strip()}")
-        lines.append(f"- 技术方法: {a.get('methods', '').strip()}")
-        lines.append(f"- 关键公式/方法表达: {a.get('key_formula_method', '').strip()}")
-        lines.append(f"- 解决问题: {a.get('solved_problem', '').strip()}")
-        lines.append(f"- 实验结果分析: {a.get('experiment_analysis', '').strip()}")
-        lines.append(f"- 证据要点: {a.get('evidence_points', '').strip()}")
-        lines.append(f"- 图表物理现象解读: {a.get('figure_interpretation', '').strip()}")
-        lines.append(f"- 作者思考路径: {a.get('author_reasoning', '').strip()}")
+        lines.append(f"- 摘要浓缩: {analysis_text(a.get('abstract_cn', ''))}")
+        lines.append(f"- 核心想法: {analysis_text(a.get('core_idea', ''))}")
+        lines.append(f"- 技术方法: {analysis_text(a.get('methods', ''))}")
+        lines.append(f"- 关键公式/方法表达: {analysis_text(a.get('key_formula_method', ''))}")
+        lines.append(f"- 解决问题: {analysis_text(a.get('solved_problem', ''))}")
+        lines.append(f"- 实验结果分析: {analysis_text(a.get('experiment_analysis', ''))}")
+        lines.append(f"- 证据要点: {analysis_text(a.get('evidence_points', ''))}")
+        lines.append(f"- 图表物理现象解读: {analysis_text(a.get('figure_interpretation', ''))}")
+        lines.append(f"- 作者思考路径: {analysis_text(a.get('author_reasoning', ''))}")
         lines.append(f"- 可信度: {a.get('confidence', '中')}")
         lines.append(
             "- 重要性评分: "
@@ -723,16 +745,16 @@ def build_html(
         parts.append(f"<h3>{idx}) {html.escape(paper.title)}</h3>")
         parts.append(f"<p><b>arXiv:</b> <a href='{html.escape(paper.abs_url)}'>{html.escape(paper.abs_url)}</a></p>")
         parts.append(f"<p><b>方向:</b> {html.escape(', '.join(paper.topic_hits))}</p>")
-        parts.append(f"<p><b>摘要浓缩:</b> {html_text(a.get('abstract_cn', ''))}</p>")
-        parts.append(f"<p><b>核心想法:</b> {html_text(a.get('core_idea', ''))}</p>")
-        parts.append(f"<p><b>技术方法:</b> {html_text(a.get('methods', ''))}</p>")
-        parts.append(f"<p><b>关键公式/方法表达:</b> {html_text(a.get('key_formula_method', ''))}</p>")
-        parts.append(f"<p><b>解决问题:</b> {html_text(a.get('solved_problem', ''))}</p>")
-        parts.append(f"<p><b>实验结果分析:</b> {html_text(a.get('experiment_analysis', ''))}</p>")
-        parts.append(f"<p><b>证据要点:</b> {html_text(a.get('evidence_points', ''))}</p>")
-        parts.append(f"<p><b>图表物理现象解读:</b> {html_text(a.get('figure_interpretation', ''))}</p>")
-        parts.append(f"<p><b>作者思考路径:</b> {html_text(a.get('author_reasoning', ''))}</p>")
-        parts.append(f"<p><b>可信度:</b> {html.escape(a.get('confidence', '中'))}</p>")
+        parts.append(f"<p><b>摘要浓缩:</b> {html_text(analysis_text(a.get('abstract_cn', '')))}</p>")
+        parts.append(f"<p><b>核心想法:</b> {html_text(analysis_text(a.get('core_idea', '')))}</p>")
+        parts.append(f"<p><b>技术方法:</b> {html_text(analysis_text(a.get('methods', '')))}</p>")
+        parts.append(f"<p><b>关键公式/方法表达:</b> {html_text(analysis_text(a.get('key_formula_method', '')))}</p>")
+        parts.append(f"<p><b>解决问题:</b> {html_text(analysis_text(a.get('solved_problem', '')))}</p>")
+        parts.append(f"<p><b>实验结果分析:</b> {html_text(analysis_text(a.get('experiment_analysis', '')))}</p>")
+        parts.append(f"<p><b>证据要点:</b> {html_text(analysis_text(a.get('evidence_points', '')))}</p>")
+        parts.append(f"<p><b>图表物理现象解读:</b> {html_text(analysis_text(a.get('figure_interpretation', '')))}</p>")
+        parts.append(f"<p><b>作者思考路径:</b> {html_text(analysis_text(a.get('author_reasoning', '')))}</p>")
+        parts.append(f"<p><b>可信度:</b> {html.escape(analysis_text(a.get('confidence', '中')))}</p>")
 
         imgs = figures.get(paper.arxiv_id, [])
         if not imgs:
