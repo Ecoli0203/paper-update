@@ -249,6 +249,28 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str,
     return data
 
 
+def summarize_rule_based(paper: Paper) -> dict[str, str]:
+    abstract = re.sub(r"\s+", " ", paper.summary).strip()
+    chunks = re.split(r"(?<=[.!?])\s+", abstract)
+    first = chunks[0] if chunks else abstract
+    second = chunks[1] if len(chunks) > 1 else ""
+    topic_cn = {
+        "tmd": "TMD",
+        "nonlinear_anomalous_hall": "非线性反常霍尔",
+        "topological_materials": "拓扑材料",
+        "superconductivity": "超导",
+    }
+    topic_text = "、".join(topic_cn.get(t, t) for t in paper.topic_hits) if paper.topic_hits else "凝聚态"
+    return {
+        "abstract_cn": f"本文关注{topic_text}方向。核心内容：{first}",
+        "methods": f"依据摘要识别的方法线索：{second or '文中主要通过理论建模/实验表征与数据分析推进结论。'}",
+        "solved_problem": "目标是识别该体系中的关键物理机制并给出可验证结果，具体贡献请结合原文方法与结果段落确认。",
+        "experiment_analysis": "建议重点看输运/能带/相图等关键图，验证是否有对照实验、参数扫描与替代机制排除。",
+        "author_reasoning": "研究动机 -> 提出机制假设 -> 设计测量或计算 -> 用关键观测量验证 -> 讨论边界与下一步。",
+        "confidence": "中",
+    }
+
+
 def extract_figures(paper: Paper, output_dir: Path, limit: int = 3) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -399,10 +421,13 @@ def main() -> None:
     parser.add_argument("--supplement", action="store_true")
     args = parser.parse_args()
 
-    api_key = env_clean("OPENAI_API_KEY")
-    api_base = env_clean("OPENAI_API_BASE", "https://api.openai.com/v1")
+    enable_llm = env_clean("ENABLE_LLM", "false").lower() in {"1", "true", "yes", "on"}
     model = env_clean("OPENAI_MODEL", "gpt-4o-mini")
-    client = OpenAI(api_key=api_key, base_url=api_base)
+    client: OpenAI | None = None
+    if enable_llm:
+        api_key = env_clean("OPENAI_API_KEY")
+        api_base = env_clean("OPENAI_API_BASE", "https://api.openai.com/v1")
+        client = OpenAI(api_key=api_key, base_url=api_base)
 
     entries = fetch_arxiv()
     top, fast = select_papers(entries, args.lookback_hours, args.max_top, args.max_fast)
@@ -418,7 +443,10 @@ def main() -> None:
     analyses: dict[str, dict[str, str]] = {}
     figures: dict[str, list[Path]] = {}
     for p in top:
-        analyses[p.arxiv_id] = summarize_with_openai(client, model, p)
+        if client is not None:
+            analyses[p.arxiv_id] = summarize_with_openai(client, model, p)
+        else:
+            analyses[p.arxiv_id] = summarize_rule_based(p)
         figures[p.arxiv_id] = extract_figures(p, image_dir, limit=3)
 
     md = build_markdown(top, fast, analyses, figures, args.lookback_hours, now_bj)

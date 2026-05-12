@@ -20,6 +20,7 @@ Set these in `Settings -> Secrets and variables -> Actions`.
 - `OPENAI_API_KEY`: OpenAI API key
 - `OPENAI_API_BASE`: `https://api.openai.com/v1`
 - `OPENAI_MODEL`: e.g. `gpt-4o-mini`
+- `ENABLE_LLM`: `true` to enable OpenAI summaries, `false` to use rule-based fallback
 - `SMTP_USER`: your QQ email address
 - `SMTP_PASS`: QQ SMTP authorization code (not login password)
 - `FROM_EMAIL`: sender email (usually same as `SMTP_USER`)
@@ -48,6 +49,11 @@ Workflow is configured in `.github/workflows/daily-digest.yml`:
 - `10 1 * * *` UTC (09:10 Beijing): supplement update window
 
 Manual run is available via `workflow_dispatch`.
+
+## LLM mode notes
+
+- If you do not have a standalone OpenAI key (for example only using Chat UI access), set `ENABLE_LLM=false`.
+- In fallback mode, the pipeline still runs and sends digest email, but analysis quality is lower than full LLM mode.
 
 ## 3) Local test
 
