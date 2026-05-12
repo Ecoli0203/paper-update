@@ -18,7 +18,7 @@ It runs on GitHub Actions and sends email reports with:
 Set these in `Settings -> Secrets and variables -> Actions`.
 
 - `OPENAI_API_KEY`: OpenAI API key
-- `OPENAI_API_BASE`: `https://api.openai.com/v1`
+- `OPENAI_API_BASE`: API base URL ending with `/v1` (for OpenCodeZen use `https://opencode.ai/zen/v1`)
 - `OPENAI_MODEL`: e.g. `gpt-4o-mini`
 - `ENABLE_LLM`: `true` to enable OpenAI summaries, `false` to use rule-based fallback
 - `SMTP_USER`: your QQ email address

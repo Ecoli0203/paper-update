@@ -232,21 +232,61 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str,
         f"Topics: {', '.join(paper.topic_hits)}\n"
         "Generate structured analysis for daily digest."
     )
-    resp = client.chat.completions.create(
+    resp = client.responses.create(
         model=model,
-        response_format={"type": "json_object"},
-        messages=[
+        input=[
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.2,
+        text={"format": {"type": "json_object"}},
     )
-    content = resp.choices[0].message.content or "{}"
-    data = json.loads(content)
+    content = getattr(resp, "output_text", "") or ""
+    if not content:
+        content = extract_output_text(resp)
+    data = extract_json_object(content)
     keys = ["abstract_cn", "methods", "solved_problem", "experiment_analysis", "author_reasoning", "confidence"]
     for k in keys:
         data.setdefault(k, "")
     return data
+
+
+def extract_output_text(resp: Any) -> str:
+    output = getattr(resp, "output", None)
+    if not output:
+        return ""
+    chunks: list[str] = []
+    for item in output:
+        content = getattr(item, "content", None)
+        if not content:
+            continue
+        for part in content:
+            ptype = getattr(part, "type", "")
+            if ptype == "output_text":
+                text = getattr(part, "text", "")
+                if text:
+                    chunks.append(text)
+    return "\n".join(chunks)
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if not cleaned:
+        return {}
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 def summarize_rule_based(paper: Paper) -> dict[str, str]:
