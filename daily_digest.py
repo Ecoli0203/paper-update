@@ -226,8 +226,9 @@ def select_papers(entries: list[dict[str, Any]], lookback_hours: float, max_top:
 def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str, str]:
     sys_prompt = (
         "You are a condensed matter research assistant. "
-        "Return strict JSON with keys: abstract_cn, methods, solved_problem, experiment_analysis, author_reasoning, confidence. "
-        "Use concise Chinese. confidence must be one of: 高, 中, 低."
+        "Return strict JSON with keys: abstract_cn, methods, solved_problem, experiment_analysis, author_reasoning, figure_interpretation, confidence. "
+        "Use concise Chinese. confidence must be one of: 高, 中, 低. "
+        "Do not use LaTeX, do not include $ or $$ delimiters."
     )
     user_prompt = (
         f"Title: {paper.title}\n"
@@ -249,9 +250,19 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper) -> dict[str,
     if not content:
         content = extract_output_text(resp)
     data = extract_json_object(content)
-    keys = ["abstract_cn", "methods", "solved_problem", "experiment_analysis", "author_reasoning", "confidence"]
+    keys = [
+        "abstract_cn",
+        "methods",
+        "solved_problem",
+        "experiment_analysis",
+        "author_reasoning",
+        "figure_interpretation",
+        "confidence",
+    ]
     for k in keys:
         data.setdefault(k, "")
+        if isinstance(data[k], str):
+            data[k] = strip_latex_delimiters(data[k])
     return data
 
 
@@ -311,8 +322,18 @@ def summarize_rule_based(paper: Paper) -> dict[str, str]:
         "solved_problem": "目标是识别该体系中的关键物理机制并给出可验证结果，具体贡献请结合原文方法与结果段落确认。",
         "experiment_analysis": "建议重点看输运/能带/相图等关键图，验证是否有对照实验、参数扫描与替代机制排除。",
         "author_reasoning": "研究动机 -> 提出机制假设 -> 设计测量或计算 -> 用关键观测量验证 -> 讨论边界与下一步。",
+        "figure_interpretation": "图表通常用于展示相图演化、输运响应或能带特征，以支撑机制解释与参数依赖关系。",
         "confidence": "中",
     }
+
+
+def strip_latex_delimiters(text: str) -> str:
+    t = text
+    t = re.sub(r"\$\$([\s\S]*?)\$\$", r"\1", t)
+    t = re.sub(r"\$([^$\n]+)\$", r"\1", t)
+    t = t.replace("\\(", "").replace("\\)", "")
+    t = t.replace("\\[", "").replace("\\]", "")
+    return t
 
 
 def extract_figures(paper: Paper, output_dir: Path, limit: int = 3) -> list[Path]:
@@ -382,6 +403,7 @@ def build_markdown(
         lines.append(f"- 技术方法: {a.get('methods', '').strip()}")
         lines.append(f"- 解决问题: {a.get('solved_problem', '').strip()}")
         lines.append(f"- 实验结果分析: {a.get('experiment_analysis', '').strip()}")
+        lines.append(f"- 图表物理现象解读: {a.get('figure_interpretation', '').strip()}")
         lines.append(f"- 作者思考路径: {a.get('author_reasoning', '').strip()}")
         lines.append(f"- 可信度: {a.get('confidence', '中')}")
         lines.append(
@@ -406,29 +428,62 @@ def build_markdown(
 
 
 def build_html(
-    md_text: str,
     top: list[Paper],
+    fast: list[Paper],
+    lookback_hours: float,
+    run_ts_bj: dt.datetime,
     analyses: dict[str, dict[str, str]],
     figures: dict[str, list[Path]],
 ) -> tuple[str, list[tuple[str, bytes, str]]]:
-    body = markdown.markdown(md_text, extensions=["tables"])
     cid_parts: list[tuple[str, bytes, str]] = []
-    extra = ["<hr><h2>图表预览</h2>"]
+    parts = []
+    parts.append(f"<h1>凝聚态论文日报 | {html.escape(run_ts_bj.strftime('%Y-%m-%d %H:%M'))} (北京时间)</h1>")
+    parts.append("<h2>今日概览</h2>")
+    parts.append("<ul>")
+    parts.append(f"<li>抓取窗口: 最近 {lookback_hours:.1f} 小时</li>")
+    parts.append(f"<li>重点精读: {len(top)} 篇</li>")
+    parts.append(f"<li>快速速览: {len(fast)} 篇</li>")
+    parts.append("</ul>")
+    parts.append("<h2>今日重点精读</h2>")
 
-    for paper in top:
+    for idx, paper in enumerate(top, start=1):
+        a = analyses.get(paper.arxiv_id, {})
+        parts.append(f"<h3>{idx}) {html.escape(paper.title)}</h3>")
+        parts.append(f"<p><b>arXiv:</b> <a href='{html.escape(paper.abs_url)}'>{html.escape(paper.abs_url)}</a></p>")
+        parts.append(f"<p><b>方向:</b> {html.escape(', '.join(paper.topic_hits))}</p>")
+        parts.append(f"<p><b>摘要浓缩:</b> {html.escape(a.get('abstract_cn', ''))}</p>")
+        parts.append(f"<p><b>技术方法:</b> {html.escape(a.get('methods', ''))}</p>")
+        parts.append(f"<p><b>解决问题:</b> {html.escape(a.get('solved_problem', ''))}</p>")
+        parts.append(f"<p><b>实验结果分析:</b> {html.escape(a.get('experiment_analysis', ''))}</p>")
+        parts.append(f"<p><b>图表物理现象解读:</b> {html.escape(a.get('figure_interpretation', ''))}</p>")
+        parts.append(f"<p><b>作者思考路径:</b> {html.escape(a.get('author_reasoning', ''))}</p>")
+        parts.append(f"<p><b>可信度:</b> {html.escape(a.get('confidence', '中'))}</p>")
+
         imgs = figures.get(paper.arxiv_id, [])
         if not imgs:
             continue
-        extra.append(f"<h3>{html.escape(paper.title)}</h3>")
-        extra.append(f"<p><a href='{html.escape(paper.abs_url)}'>{html.escape(paper.abs_url)}</a></p>")
-        extra.append(f"<p><b>图表速读：</b>{html.escape(analyses.get(paper.arxiv_id, {}).get('experiment_analysis', ''))}</p>")
+        parts.append("<p><b>关键图表:</b></p>")
         for idx, img_path in enumerate(imgs, start=1):
             cid = f"{paper.arxiv_id.replace('/', '_')}_{idx}@daily"
             ext = img_path.suffix.lstrip(".").lower() or "png"
             ctype = "image/png" if ext == "png" else "image/jpeg"
             cid_parts.append((cid, img_path.read_bytes(), ctype))
-            extra.append(f"<p>Fig.{idx}</p><img src='cid:{cid}' style='max-width:880px;width:100%;height:auto;'/>" )
-    return body + "\n" + "\n".join(extra), cid_parts
+            parts.append(f"<p>Fig.{idx}</p><img src='cid:{cid}' style='max-width:880px;width:100%;height:auto;'/>" )
+
+    parts.append("<h2>快速速览</h2>")
+    parts.append("<table border='1' cellpadding='6' cellspacing='0' style='border-collapse: collapse;'>")
+    parts.append("<tr><th>标题</th><th>方向</th><th>链接</th></tr>")
+    for paper in fast:
+        parts.append(
+            "<tr>"
+            f"<td>{html.escape(paper.title)}</td>"
+            f"<td>{html.escape(', '.join(paper.topic_hits))}</td>"
+            f"<td><a href='{html.escape(paper.abs_url)}'>arXiv</a></td>"
+            "</tr>"
+        )
+    parts.append("</table>")
+
+    return "\n".join(parts), cid_parts
 
 
 def send_email(subject: str, html_body: str, cid_parts: list[tuple[str, bytes, str]]) -> None:
@@ -510,7 +565,7 @@ def main() -> None:
     md_path = run_dir / md_name
     md_path.write_text(md, encoding="utf-8")
 
-    html_body, cids = build_html(md, top, analyses, figures)
+    html_body, cids = build_html(top, fast, args.lookback_hours, now_bj, analyses, figures)
     suffix = "补充更新" if args.supplement else "早报"
     subject = f"凝聚态论文日报 {now_bj.strftime('%Y-%m-%d')} | {suffix}"
     send_email(subject, html_body, cids)
