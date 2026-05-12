@@ -346,23 +346,32 @@ def call_responses_api(
     temperature: float,
 ) -> str:
     endpoint = responses_endpoint(api_base)
-    payload = {
+    text_input = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in input_messages)
+    payloads = []
+
+    base_payload = {
         "model": model,
         "input": input_messages,
         "temperature": temperature,
-        "text": {"format": {"type": "json_object"}},
     }
-    resp = requests.post(
-        endpoint,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=180,
-    )
-    if resp.status_code == 400 and "json_object" in resp.text:
-        payload.pop("text", None)
+
+    structured_payload = dict(base_payload)
+    structured_payload["text"] = {"format": {"type": "json_object"}}
+    payloads.append(("structured_messages_json", structured_payload))
+    payloads.append(("messages", base_payload))
+
+    string_payload = {
+        "model": model,
+        "input": text_input,
+        "temperature": temperature,
+    }
+    string_json_payload = dict(string_payload)
+    string_json_payload["text"] = {"format": {"type": "json_object"}}
+    payloads.append(("string_json", string_json_payload))
+    payloads.append(("string", string_payload))
+
+    last_resp: requests.Response | None = None
+    for label, payload in payloads:
         resp = requests.post(
             endpoint,
             headers={
@@ -372,14 +381,28 @@ def call_responses_api(
             json=payload,
             timeout=180,
         )
-    if resp.status_code == 404:
+        last_resp = resp
+        if resp.ok:
+            print(f"LLM request succeeded with payload mode: {label}")
+            data = resp.json()
+            return extract_response_output_text(data)
+        if resp.status_code not in {400, 422}:
+            break
+
+    if last_resp is None:
+        raise RuntimeError("LLM request was not sent")
+    if last_resp.status_code == 404:
         raise RuntimeError(
             f"LLM endpoint not found: {endpoint}. Set OPENAI_API_BASE to https://opencode.ai/zen/v1 "
             "or https://opencode.ai/zen/v1/responses."
         )
-    resp.raise_for_status()
-    data = resp.json()
-    return extract_response_output_text(data)
+    body = sanitize_error_body(last_resp.text)
+    raise RuntimeError(f"LLM request failed: HTTP {last_resp.status_code} at {endpoint}. Response: {body}")
+
+
+def sanitize_error_body(text: str, limit: int = 1200) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    return compact[:limit]
 
 
 def extract_response_output_text(data: dict[str, Any]) -> str:
