@@ -348,12 +348,13 @@ def call_responses_api(
     endpoint = responses_endpoint(api_base)
     text_input = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in input_messages)
     payloads = []
+    supports_temperature = not model.lower().startswith("gpt-5")
 
     base_payload = {
         "model": model,
         "input": input_messages,
     }
-    if temperature is not None:
+    if temperature is not None and supports_temperature:
         base_payload["temperature"] = temperature
 
     structured_payload = dict(base_payload)
@@ -365,7 +366,7 @@ def call_responses_api(
         "model": model,
         "input": text_input,
     }
-    if temperature is not None:
+    if temperature is not None and supports_temperature:
         string_payload["temperature"] = temperature
     string_json_payload = dict(string_payload)
     string_json_payload["text"] = {"format": {"type": "json_object"}}
@@ -374,6 +375,8 @@ def call_responses_api(
 
     last_resp: requests.Response | None = None
     for label, payload in payloads:
+        if not supports_temperature:
+            payload.pop("temperature", None)
         resp = requests.post(
             endpoint,
             headers={
