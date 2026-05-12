@@ -58,6 +58,7 @@ Manual run is available via `workflow_dispatch`.
 
 - If you do not have a standalone OpenAI key (for example only using Chat UI access), set `ENABLE_LLM=false`.
 - In fallback mode, the pipeline still runs and sends digest email, but analysis quality is lower than full LLM mode.
+- The workflow log prints `LLM mode: enabled` or `LLM mode: disabled`; check this line after manual runs.
 
 ## 3) Local test
 

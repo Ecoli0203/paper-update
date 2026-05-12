@@ -112,6 +112,26 @@ def env_clean(key: str, default: str | None = None) -> str:
     return cleaned
 
 
+def env_bool(keys: list[str], default: bool = False) -> bool:
+    """Read boolean env from multiple possible names.
+
+    This accepts a typo-compatible alias so a misnamed GitHub Secret does not
+    silently force summary-only fallback mode.
+    """
+    for key in keys:
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        cleaned = raw.replace("\r", "").replace("\n", "").strip().lower()
+        if not cleaned:
+            continue
+        if cleaned in {"1", "true", "yes", "on"}:
+            return True
+        if cleaned in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def looks_like_email(value: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
 
@@ -669,13 +689,16 @@ def main() -> None:
     parser.add_argument("--pdf-max-pages", type=int, default=int(env_clean("PDF_MAX_PAGES", "8")))
     args = parser.parse_args()
 
-    enable_llm = env_clean("ENABLE_LLM", "false").lower() in {"1", "true", "yes", "on"}
+    enable_llm = env_bool(["ENABLE_LLM", "EABLE_LLM"], default=False)
     model = env_clean("OPENAI_MODEL", "gpt-4o-mini")
     client: OpenAI | None = None
     if enable_llm:
         api_key = env_clean("OPENAI_API_KEY")
         api_base = env_clean("OPENAI_API_BASE", "https://api.openai.com/v1")
         client = OpenAI(api_key=api_key, base_url=api_base)
+        print(f"LLM mode: enabled; model={model}; base_url={api_base}")
+    else:
+        print("LLM mode: disabled; using rule-based fallback. Set ENABLE_LLM=true to enable deep analysis.")
 
     entries = fetch_arxiv()
     top, fast = select_papers(entries, args.lookback_hours, args.max_top, args.max_fast)

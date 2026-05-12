@@ -38,6 +38,7 @@ jobs:
       - name: Generate and send digest
         env:
           ENABLE_LLM: ${{ secrets.ENABLE_LLM }}
+          EABLE_LLM: ${{ secrets.EABLE_LLM }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
