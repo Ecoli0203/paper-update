@@ -243,7 +243,7 @@ def select_papers(entries: list[dict[str, Any]], lookback_hours: float, max_top:
     return top, fast
 
 
-def summarize_with_openai(client: OpenAI, model: str, paper: Paper, pdf_max_pages: int = 8) -> dict[str, str]:
+def summarize_with_openai(api_key: str, api_base: str, model: str, paper: Paper, pdf_max_pages: int = 8) -> dict[str, str]:
     context = extract_paper_context(paper, max_pages=pdf_max_pages)
     context_text = context["text_excerpt"]
     equations = context["equations"]
@@ -278,18 +278,16 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper, pdf_max_page
         "8) figure_interpretation: 按 Fig1/Fig2/Fig3 分别解释物理现象与结论支撑。\n"
         "Generate detailed structured analysis for daily digest."
     )
-    resp = client.responses.create(
+    content = call_responses_api(
+        api_key=api_key,
+        api_base=api_base,
         model=model,
-        input=[
+        input_messages=[
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.2,
-        text={"format": {"type": "json_object"}},
     )
-    content = getattr(resp, "output_text", "") or ""
-    if not content:
-        content = extract_output_text(resp)
     data = extract_json_object(content)
     keys = [
         "abstract_cn",
@@ -316,21 +314,85 @@ def summarize_with_openai(client: OpenAI, model: str, paper: Paper, pdf_max_page
             f"Body excerpt: {context_text}\n"
             "要求：所有字段都要包含本文具体名词，不得出现“建议重点看”“目标是”等空泛句。"
         )
-        repaired = client.responses.create(
+        repaired_text = call_responses_api(
+            api_key=api_key,
+            api_base=api_base,
             model=model,
-            input=[
+            input_messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": repair_prompt},
             ],
             temperature=0.1,
-            text={"format": {"type": "json_object"}},
         )
-        repaired_text = getattr(repaired, "output_text", "") or extract_output_text(repaired)
         repaired_data = extract_json_object(repaired_text)
         for k in keys:
             if isinstance(repaired_data.get(k), str) and repaired_data[k].strip():
                 data[k] = strip_latex_delimiters(repaired_data[k])
     return data
+
+
+def responses_endpoint(api_base: str) -> str:
+    base = api_base.strip().rstrip("/")
+    if base.endswith("/responses"):
+        return base
+    return f"{base}/responses"
+
+
+def call_responses_api(
+    api_key: str,
+    api_base: str,
+    model: str,
+    input_messages: list[dict[str, str]],
+    temperature: float,
+) -> str:
+    endpoint = responses_endpoint(api_base)
+    payload = {
+        "model": model,
+        "input": input_messages,
+        "temperature": temperature,
+        "text": {"format": {"type": "json_object"}},
+    }
+    resp = requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=180,
+    )
+    if resp.status_code == 400 and "json_object" in resp.text:
+        payload.pop("text", None)
+        resp = requests.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=180,
+        )
+    if resp.status_code == 404:
+        raise RuntimeError(
+            f"LLM endpoint not found: {endpoint}. Set OPENAI_API_BASE to https://opencode.ai/zen/v1 "
+            "or https://opencode.ai/zen/v1/responses."
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return extract_response_output_text(data)
+
+
+def extract_response_output_text(data: dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    chunks: list[str] = []
+    for item in data.get("output", []) or []:
+        for part in item.get("content", []) or []:
+            if part.get("type") == "output_text" and part.get("text"):
+                chunks.append(str(part["text"]))
+    return "\n".join(chunks)
 
 
 def is_generic_analysis(data: dict[str, Any]) -> bool:
@@ -691,12 +753,12 @@ def main() -> None:
 
     enable_llm = env_bool(["ENABLE_LLM", "EABLE_LLM"], default=False)
     model = env_clean("OPENAI_MODEL", "gpt-4o-mini")
-    client: OpenAI | None = None
+    api_key = ""
+    api_base = ""
     if enable_llm:
         api_key = env_clean("OPENAI_API_KEY")
         api_base = env_clean("OPENAI_API_BASE", "https://api.openai.com/v1")
-        client = OpenAI(api_key=api_key, base_url=api_base)
-        print(f"LLM mode: enabled; model={model}; base_url={api_base}")
+        print(f"LLM mode: enabled; model={model}; endpoint={responses_endpoint(api_base)}")
     else:
         print("LLM mode: disabled; using rule-based fallback. Set ENABLE_LLM=true to enable deep analysis.")
 
@@ -714,8 +776,8 @@ def main() -> None:
     analyses: dict[str, dict[str, str]] = {}
     figures: dict[str, list[Path]] = {}
     for p in top:
-        if client is not None:
-            analyses[p.arxiv_id] = summarize_with_openai(client, model, p, pdf_max_pages=args.pdf_max_pages)
+        if enable_llm:
+            analyses[p.arxiv_id] = summarize_with_openai(api_key, api_base, model, p, pdf_max_pages=args.pdf_max_pages)
         else:
             analyses[p.arxiv_id] = summarize_rule_based(p)
         figures[p.arxiv_id] = extract_figures(p, image_dir, limit=3)
