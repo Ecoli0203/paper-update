@@ -352,8 +352,9 @@ def call_responses_api(
     base_payload = {
         "model": model,
         "input": input_messages,
-        "temperature": temperature,
     }
+    if temperature is not None:
+        base_payload["temperature"] = temperature
 
     structured_payload = dict(base_payload)
     structured_payload["text"] = {"format": {"type": "json_object"}}
@@ -363,8 +364,9 @@ def call_responses_api(
     string_payload = {
         "model": model,
         "input": text_input,
-        "temperature": temperature,
     }
+    if temperature is not None:
+        string_payload["temperature"] = temperature
     string_json_payload = dict(string_payload)
     string_json_payload["text"] = {"format": {"type": "json_object"}}
     payloads.append(("string_json", string_json_payload))
@@ -386,6 +388,23 @@ def call_responses_api(
             print(f"LLM request succeeded with payload mode: {label}")
             data = resp.json()
             return extract_response_output_text(data)
+        if resp.status_code == 400 and "temperature" in resp.text and "Unsupported parameter" in resp.text:
+            payload_without_temperature = dict(payload)
+            payload_without_temperature.pop("temperature", None)
+            resp = requests.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload_without_temperature,
+                timeout=180,
+            )
+            last_resp = resp
+            if resp.ok:
+                print(f"LLM request succeeded with payload mode: {label}_no_temperature")
+                data = resp.json()
+                return extract_response_output_text(data)
         if resp.status_code not in {400, 422}:
             break
 
