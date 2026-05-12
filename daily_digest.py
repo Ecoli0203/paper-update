@@ -100,6 +100,18 @@ def env_list(key: str) -> list[str]:
     return [x.strip().lower() for x in raw.split(",") if x.strip()]
 
 
+def env_clean(key: str, default: str | None = None) -> str:
+    raw = os.getenv(key)
+    if raw is None:
+        if default is None:
+            raise KeyError(f"Missing required env: {key}")
+        return default
+    cleaned = raw.replace("\r", "").replace("\n", "").strip()
+    if not cleaned and default is not None:
+        return default
+    return cleaned
+
+
 def build_query() -> str:
     cats = [
         "cond-mat.mtrl-sci",
@@ -354,12 +366,12 @@ def build_html(
 
 
 def send_email(subject: str, html_body: str, cid_parts: list[tuple[str, bytes, str]]) -> None:
-    smtp_host = os.environ["SMTP_HOST"]
-    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
-    smtp_user = os.environ["SMTP_USER"]
-    smtp_pass = os.environ["SMTP_PASS"]
-    from_email = os.environ.get("FROM_EMAIL", smtp_user)
-    to_email = os.environ["TO_EMAIL"]
+    smtp_host = env_clean("SMTP_HOST")
+    smtp_port = int(env_clean("SMTP_PORT", "465"))
+    smtp_user = env_clean("SMTP_USER")
+    smtp_pass = env_clean("SMTP_PASS")
+    from_email = env_clean("FROM_EMAIL", smtp_user)
+    to_email = env_clean("TO_EMAIL")
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -387,9 +399,9 @@ def main() -> None:
     parser.add_argument("--supplement", action="store_true")
     args = parser.parse_args()
 
-    api_key = os.environ["OPENAI_API_KEY"]
-    api_base = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    api_key = env_clean("OPENAI_API_KEY")
+    api_base = env_clean("OPENAI_API_BASE", "https://api.openai.com/v1")
+    model = env_clean("OPENAI_MODEL", "gpt-4o-mini")
     client = OpenAI(api_key=api_key, base_url=api_base)
 
     entries = fetch_arxiv()
